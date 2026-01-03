@@ -4,81 +4,114 @@ import signal
 import subprocess
 import sys
 import os
+import time
 
 PORT = 5555
+BUFFER = 4096
 running = True
-prompt = "> "
 
-# ===== Clear screen =====
-def clear():
-    os.system("clear")
-
-# ===== Stop handler =====
 def stop_all(sig, frame):
-    global running
     print("\n[!] Stopping chat and Tor...")
-    subprocess.call(["sudo", "systemctl", "stop", "tor"])
-    running = False
+    try:
+        subprocess.call(["sudo", "systemctl", "stop", "tor"])
+    except:
+        pass
     sys.exit(0)
 
 signal.signal(signal.SIGINT, stop_all)
 
-# ===== Receive messages =====
+def progress_bar(done, total, prefix=""):
+    percent = int((done / total) * 100)
+    bars = int(percent / 5)
+    bar = "█" * bars + "░" * (20 - bars)
+    print(f"\r{prefix} [{bar}] {percent}%", end="", flush=True)
+
 def receive(conn):
     while running:
         try:
-            data = conn.recv(1024)
+            data = conn.recv(BUFFER)
             if not data:
                 break
 
-            # Clear current input line and reprint prompt
-            sys.stdout.write("\r")
-            sys.stdout.write(" " * 80)
-            sys.stdout.write("\r")
+            if data.startswith(b"FILE|"):
+                _, filename, filesize = data.decode().split("|")
+                filesize = int(filesize)
 
-            print(f"Friend: {data.decode().strip()}")
-            sys.stdout.write(prompt)
-            sys.stdout.flush()
+                print(f"\n[Receiving file: {filename}]")
+                received = 0
+
+                with open(filename, "wb") as f:
+                    while received < filesize:
+                        chunk = conn.recv(BUFFER)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        received += len(chunk)
+                        progress_bar(received, filesize, "Receiving")
+
+                print(f"\n[File saved as {filename}]\n> ", end="")
+            else:
+                print("\nFriend:", data.decode(), "\n> ", end="")
 
         except:
             break
 
-# ===== Chat loop =====
+def send_file(conn, path):
+    if not os.path.exists(path):
+        print("[File not found]")
+        return
+
+    filesize = os.path.getsize(path)
+    filename = os.path.basename(path)
+
+    header = f"FILE|{filename}|{filesize}".encode()
+    conn.send(header)
+
+    sent = 0
+    print(f"[Sending file: {filename}]")
+
+    with open(path, "rb") as f:
+        while chunk := f.read(BUFFER):
+            conn.send(chunk)
+            sent += len(chunk)
+            progress_bar(sent, filesize, "Sending")
+
+    print(f"\n[File sent: {filename}]")
+
 def chat(conn):
     threading.Thread(target=receive, args=(conn,), daemon=True).start()
+
     while running:
         try:
-            msg = input(prompt)
-            conn.send(msg.encode())
+            msg = input("> ")
+
+            if msg.startswith("/send "):
+                filepath = msg.split(" ", 1)[1]
+                send_file(conn, filepath)
+            else:
+                conn.send(msg.encode())
+
         except:
             break
 
-# ===== Host mode =====
 def host():
-    clear()
     s = socket.socket()
     s.bind(("127.0.0.1", PORT))
     s.listen(1)
     print("[Waiting for connection...]")
     conn, _ = s.accept()
-    clear()
     print("[Connected]")
     chat(conn)
 
-# ===== Connect mode =====
 def connect(onion):
-    clear()
     s = socket.socket()
     s.connect((onion, PORT))
-    clear()
     print("[Connected]")
     chat(s)
 
-# ===== Main =====
-clear()
-mode = input("Host (h) or Connect (c)? ").lower()
+mode = input("Host (h) or Connect (c)? ")
 
-if mode == "h":
+if mode.lower() == "h":
     host()
 else:
     onion = input("Enter .onion address: ")
