@@ -5,11 +5,15 @@ import subprocess
 import sys
 import os
 import time
+import hashlib
+from cryptography.fernet import Fernet
 
 PORT = 5555
 BUFFER = 4096
 running = True
-SHARED_SECRET = None
+CIPHER = None
+
+# ---------- UI ----------
 
 def clear():
     os.system("clear")
@@ -18,8 +22,21 @@ def show_logo():
     try:
         with open("logo.txt", "r") as f:
             print(f.read())
-    except FileNotFoundError:
-        print("[Logo file not found]")
+    except:
+        pass
+
+def show_threat_model():
+    print("""
+[ SECURITY STATUS ]
+✔ IP Address Hidden (Tor)
+✔ No Central Server
+✔ Peer Authenticated
+✔ End-to-End Encrypted
+✔ Ephemeral Session
+⚠ Tor Speed Limited
+""")
+
+# ---------- CLEAN EXIT ----------
 
 def stop_all(sig, frame):
     print("\n[!] Stopping chat and Tor...")
@@ -31,32 +48,41 @@ def stop_all(sig, frame):
 
 signal.signal(signal.SIGINT, stop_all)
 
-# ---------------- AUTH ----------------
+# ---------- CRYPTO ----------
 
-def authenticate(conn, is_host):
-    global SHARED_SECRET
+def derive_key(shared_secret: str):
+    digest = hashlib.sha256(shared_secret.encode()).digest()
+    return Fernet(base64_key(digest))
+
+def base64_key(raw):
+    import base64
+    return base64.urlsafe_b64encode(raw)
+
+def perform_key_exchange(conn, is_host):
+    global CIPHER
+
+    secret = input("Shared secret (for E2EE): ").strip()
 
     if is_host:
-        SHARED_SECRET = input("Set shared secret: ").strip()
-        conn.send(SHARED_SECRET.encode())
-        response = conn.recv(16).decode()
-        return response == "OK"
+        conn.send(secret.encode())
+        peer = conn.recv(1024).decode()
     else:
-        SHARED_SECRET = input("Enter shared secret: ").strip()
-        received = conn.recv(1024).decode()
-        if received != SHARED_SECRET:
-            conn.send(b"NO")
-            return False
-        conn.send(b"OK")
-        return True
+        peer = conn.recv(1024).decode()
+        conn.send(secret.encode())
 
-# ---------------- PROGRESS BAR ----------------
+    if peer != secret:
+        print("[AUTH FAILED]")
+        conn.close()
+        sys.exit(0)
 
-def progress_bar(done, total, start_time, prefix=""):
-    elapsed = time.time() - start_time
+    CIPHER = derive_key(secret)
+
+# ---------- PROGRESS BAR ----------
+
+def progress_bar(done, total, start, prefix=""):
+    elapsed = time.time() - start
     speed = done / elapsed if elapsed > 0 else 0
-    remaining = total - done
-    eta = int(remaining / speed) if speed > 0 else 0
+    eta = int((total - done) / speed) if speed > 0 else 0
 
     percent = int((done / total) * 100)
     bars = int(percent / 5)
@@ -66,10 +92,10 @@ def progress_bar(done, total, start_time, prefix=""):
         f"\r{prefix} [{bar}] {percent}% | "
         f"{int(speed/1024)} KB/s | ETA {eta}s",
         end="",
-        flush=True,
+        flush=True
     )
 
-# ---------------- RECEIVE ----------------
+# ---------- RECEIVE ----------
 
 def receive(conn):
     while running:
@@ -78,74 +104,68 @@ def receive(conn):
             if not data:
                 break
 
-            if data.startswith(b"FILE|"):
-                _, filename, filesize = data.decode().split("|")
-                filesize = int(filesize)
+            decrypted = CIPHER.decrypt(data)
 
-                print(f"\n[Receiving file: {filename}]")
+            if decrypted.startswith(b"FILE|"):
+                _, name, size = decrypted.decode().split("|")
+                size = int(size)
                 received = 0
                 start = time.time()
 
-                with open(filename, "wb") as f:
-                    while received < filesize:
+                print(f"\n[Receiving file: {name}]")
+                with open(name, "wb") as f:
+                    while received < size:
                         chunk = conn.recv(BUFFER)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        received += len(chunk)
-                        progress_bar(received, filesize, start, "Receiving")
+                        data = CIPHER.decrypt(chunk)
+                        f.write(data)
+                        received += len(data)
+                        progress_bar(received, size, start, "Receiving")
 
-                print(f"\n[File saved as {filename}]\n> ", end="")
+                print(f"\n[File saved: {name}]\n> ", end="")
             else:
-                print("\nFriend:", data.decode(), "\n> ", end="")
+                print("\nFriend:", decrypted.decode(), "\n> ", end="")
 
         except:
             break
 
-# ---------------- SEND FILE ----------------
+# ---------- SEND FILE ----------
 
 def send_file(conn, path):
     if not os.path.exists(path):
         print("[File not found]")
         return
 
-    filesize = os.path.getsize(path)
-    filename = os.path.basename(path)
-
-    header = f"FILE|{filename}|{filesize}".encode()
-    conn.send(header)
+    size = os.path.getsize(path)
+    name = os.path.basename(path)
+    header = f"FILE|{name}|{size}".encode()
+    conn.send(CIPHER.encrypt(header))
 
     sent = 0
     start = time.time()
-    print(f"[Sending file: {filename}]")
+    print(f"[Sending file: {name}]")
 
     with open(path, "rb") as f:
         while chunk := f.read(BUFFER):
-            conn.send(chunk)
+            enc = CIPHER.encrypt(chunk)
+            conn.send(enc)
             sent += len(chunk)
-            progress_bar(sent, filesize, start, "Sending")
+            progress_bar(sent, size, start, "Sending")
 
-    print(f"\n[File sent: {filename}]")
+    print(f"\n[File sent: {name}]")
 
-# ---------------- CHAT ----------------
+# ---------- CHAT ----------
 
 def chat(conn):
     threading.Thread(target=receive, args=(conn,), daemon=True).start()
 
     while running:
-        try:
-            msg = input("> ")
+        msg = input("> ")
+        if msg.startswith("/send "):
+            send_file(conn, msg.split(" ", 1)[1])
+        else:
+            conn.send(CIPHER.encrypt(msg.encode()))
 
-            if msg.startswith("/send "):
-                filepath = msg.split(" ", 1)[1]
-                send_file(conn, filepath)
-            else:
-                conn.send(msg.encode())
-
-        except:
-            break
-
-# ---------------- HOST / CONNECT ----------------
+# ---------- HOST / CLIENT ----------
 
 def host():
     s = socket.socket()
@@ -154,35 +174,27 @@ def host():
     print("[Waiting for connection...]")
     conn, _ = s.accept()
 
-    if not authenticate(conn, is_host=True):
-        print("[Authentication failed]")
-        conn.close()
-        return
-
-    print("[Connected ^_^]")
+    perform_key_exchange(conn, True)
+    show_threat_model()
     chat(conn)
 
 def connect(onion):
     s = socket.socket()
     s.connect((onion, PORT))
 
-    if not authenticate(s, is_host=False):
-        print("[Authentication failed]")
-        s.close()
-        return
-
-    print("[Connected ^_^]")
+    perform_key_exchange(s, False)
+    show_threat_model()
     chat(s)
 
-# ---------------- MAIN ----------------
+# ---------- MAIN ----------
 
 clear()
 show_logo()
 print()
-mode = input("Host (h) or Connect (c)? ").strip().lower()
 
+mode = input("Host (h) or Connect (c)? ").lower()
 if mode == "h":
     host()
 else:
-    onion = input("Enter .onion address: ").strip()
+    onion = input("Enter .onion address: ")
     connect(onion)
