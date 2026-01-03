@@ -40,7 +40,8 @@ if [ "$TERMUX" = true ]; then
   echo "[!] Termux detected"
 
   pkg update -y
-  pkg install -y tor python cryptography netcat-openbsd
+  pkg install -y tor python netcat-openbsd
+  pip install --upgrade cryptography
 
   echo "[✓] Termux setup complete"
   echo "Start Tor manually using: tor -f ~/.torrc"
