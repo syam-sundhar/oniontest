@@ -10,6 +10,15 @@ PORT = 5555
 BUFFER = 4096
 running = True
 
+def clear():
+    os.system("clear")
+
+def show_logo():
+    try:
+        with open("logo.txt", "r") as f:
+            print(f.read())
+    except FileNotFoundError:
+        print("[Logo file not found]")
 def stop_all(sig, frame):
     print("\n[!] Stopping chat and Tor...")
     try:
@@ -100,15 +109,17 @@ def host():
     s.listen(1)
     print("[Waiting for connection...]")
     conn, _ = s.accept()
-    print("[Connected]")
+    print("[Connected ^_^]")
     chat(conn)
 
 def connect(onion):
     s = socket.socket()
     s.connect((onion, PORT))
-    print("[Connected]")
+    print("[Connected ^_^]")
     chat(s)
-
+clear()
+show_logo()
+print("\n")
 mode = input("Host (h) or Connect (c)? ")
 
 if mode.lower() == "h":
@@ -116,3 +127,4 @@ if mode.lower() == "h":
 else:
     onion = input("Enter .onion address: ")
     connect(onion)
+
