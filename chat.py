@@ -9,6 +9,7 @@ import time
 PORT = 5555
 BUFFER = 4096
 running = True
+SHARED_SECRET = None
 
 def clear():
     os.system("clear")
@@ -19,6 +20,7 @@ def show_logo():
             print(f.read())
     except FileNotFoundError:
         print("[Logo file not found]")
+
 def stop_all(sig, frame):
     print("\n[!] Stopping chat and Tor...")
     try:
@@ -29,11 +31,45 @@ def stop_all(sig, frame):
 
 signal.signal(signal.SIGINT, stop_all)
 
-def progress_bar(done, total, prefix=""):
+# ---------------- AUTH ----------------
+
+def authenticate(conn, is_host):
+    global SHARED_SECRET
+
+    if is_host:
+        SHARED_SECRET = input("Set shared secret: ").strip()
+        conn.send(SHARED_SECRET.encode())
+        response = conn.recv(16).decode()
+        return response == "OK"
+    else:
+        SHARED_SECRET = input("Enter shared secret: ").strip()
+        received = conn.recv(1024).decode()
+        if received != SHARED_SECRET:
+            conn.send(b"NO")
+            return False
+        conn.send(b"OK")
+        return True
+
+# ---------------- PROGRESS BAR ----------------
+
+def progress_bar(done, total, start_time, prefix=""):
+    elapsed = time.time() - start_time
+    speed = done / elapsed if elapsed > 0 else 0
+    remaining = total - done
+    eta = int(remaining / speed) if speed > 0 else 0
+
     percent = int((done / total) * 100)
     bars = int(percent / 5)
     bar = "█" * bars + "░" * (20 - bars)
-    print(f"\r{prefix} [{bar}] {percent}%", end="", flush=True)
+
+    print(
+        f"\r{prefix} [{bar}] {percent}% | "
+        f"{int(speed/1024)} KB/s | ETA {eta}s",
+        end="",
+        flush=True,
+    )
+
+# ---------------- RECEIVE ----------------
 
 def receive(conn):
     while running:
@@ -48,6 +84,7 @@ def receive(conn):
 
                 print(f"\n[Receiving file: {filename}]")
                 received = 0
+                start = time.time()
 
                 with open(filename, "wb") as f:
                     while received < filesize:
@@ -56,7 +93,7 @@ def receive(conn):
                             break
                         f.write(chunk)
                         received += len(chunk)
-                        progress_bar(received, filesize, "Receiving")
+                        progress_bar(received, filesize, start, "Receiving")
 
                 print(f"\n[File saved as {filename}]\n> ", end="")
             else:
@@ -64,6 +101,8 @@ def receive(conn):
 
         except:
             break
+
+# ---------------- SEND FILE ----------------
 
 def send_file(conn, path):
     if not os.path.exists(path):
@@ -77,15 +116,18 @@ def send_file(conn, path):
     conn.send(header)
 
     sent = 0
+    start = time.time()
     print(f"[Sending file: {filename}]")
 
     with open(path, "rb") as f:
         while chunk := f.read(BUFFER):
             conn.send(chunk)
             sent += len(chunk)
-            progress_bar(sent, filesize, "Sending")
+            progress_bar(sent, filesize, start, "Sending")
 
     print(f"\n[File sent: {filename}]")
+
+# ---------------- CHAT ----------------
 
 def chat(conn):
     threading.Thread(target=receive, args=(conn,), daemon=True).start()
@@ -103,28 +145,44 @@ def chat(conn):
         except:
             break
 
+# ---------------- HOST / CONNECT ----------------
+
 def host():
     s = socket.socket()
     s.bind(("127.0.0.1", PORT))
     s.listen(1)
     print("[Waiting for connection...]")
     conn, _ = s.accept()
+
+    if not authenticate(conn, is_host=True):
+        print("[Authentication failed]")
+        conn.close()
+        return
+
     print("[Connected ^_^]")
     chat(conn)
 
 def connect(onion):
     s = socket.socket()
     s.connect((onion, PORT))
+
+    if not authenticate(s, is_host=False):
+        print("[Authentication failed]")
+        s.close()
+        return
+
     print("[Connected ^_^]")
     chat(s)
+
+# ---------------- MAIN ----------------
+
 clear()
 show_logo()
-print("\n")
-mode = input("Host (h) or Connect (c)? ")
+print()
+mode = input("Host (h) or Connect (c)? ").strip().lower()
 
-if mode.lower() == "h":
+if mode == "h":
     host()
 else:
-    onion = input("Enter .onion address: ")
+    onion = input("Enter .onion address: ").strip()
     connect(onion)
-
