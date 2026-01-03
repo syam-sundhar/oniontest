@@ -41,6 +41,7 @@ if [ "$TERMUX" = true ]; then
 
   pkg update -y
   pkg install -y tor python netcat-openbsd
+  pip install --upgrade pip setuptools wheel
   pip install --upgrade cryptography
 
   echo "[✓] Termux setup complete"
