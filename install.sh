@@ -37,6 +37,9 @@ sudo apt update -y
 info "Installing dependencies"
 sudo apt install -y tor python3 python3-pip netcat-openbsd
 
+info "Installing Python cryptography module (E2EE)"
+pip3 install --upgrade cryptography
+
 info "Configuring Tor Hidden Service"
 
 HS_DIR="/var/lib/tor/terminal_chat"
