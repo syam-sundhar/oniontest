@@ -1,4 +1,9 @@
 #!/bin/bash
+if [ -d "/data/data/com.termux" ]; then
+  TERMUX=true
+else
+  TERMUX=false
+fi
 
 set -e
 
@@ -30,6 +35,18 @@ echo_box() {
 }
 
 # ==================
+
+if [ "$TERMUX" = true ]; then
+  echo "[!] Termux detected"
+
+  pkg update -y
+  pkg install -y tor python cryptography netcat-openbsd
+
+  echo "[✓] Termux setup complete"
+  echo "Start Tor manually using: tor -f ~/.torrc"
+  exit 0
+fi
+
 
 info "Updating system"
 sudo apt update -y
